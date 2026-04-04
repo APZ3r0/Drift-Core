@@ -356,6 +356,16 @@ function makeField(gen = 0) {
   return asts;
 }
 
+function makeContract(fieldGen = 0) {
+  const oreId = Math.min(7, fieldGen + Math.floor(Math.random() * 3));
+  const ore = ORES[oreId];
+  const qty = 3 + Math.floor(Math.random() * 4) + Math.floor(fieldGen / 2);
+  const rawReward = qty * ore.val * (1.8 + Math.random() * 0.8);
+  const reward = Math.round(rawReward / 5) * 5;
+  const timer = 1800 + fieldGen * 300;
+  return { ore: oreId, qty, reward, timer };
+}
+
 // ═══════════════════════════════════════════
 // PERSISTENCE
 // ═══════════════════════════════════════════
@@ -372,7 +382,7 @@ function saveGame(g) {
       maxFuel: g.maxFuel, maxHull: g.maxHull,
       maxCargo: g.maxCargo, miningRate: g.miningRate,
       miningRange: g.miningRange, fieldGen: g.fieldGen,
-      cargo: g.cargo,
+      cargo: g.cargo, contract: g.contract,
     };
     localStorage.setItem(SAVE_KEY, JSON.stringify(save));
   } catch(_) {}
@@ -442,6 +452,16 @@ export default function DriftCore() {
       screenShake: 0,
       richVein: false,
       richVeinTimer: 0,
+      sectorFlash: 0,
+      nebula: Array.from({ length: 6 }, () => ({
+        x: Math.random() * 1200,
+        y: Math.random() * 900,
+        rx: 120 + Math.random() * 180,
+        ry: 80 + Math.random() * 120,
+        hue: [200, 260, 180, 300, 220, 240][Math.floor(Math.random() * 6)],
+        alpha: 0.04 + Math.random() * 0.05,
+        drift: (Math.random() - 0.5) * 0.008,
+      })),
     };
     if (savedData) {
       Object.assign(base, {
@@ -461,6 +481,7 @@ export default function DriftCore() {
         miningRange: savedData.miningRange ?? base.miningRange,
         fieldGen: savedData.fieldGen ?? base.fieldGen,
         cargo: savedData.cargo ?? base.cargo,
+        contract: savedData.contract ?? base.contract,
         asteroids: makeField(savedData.fieldGen ?? 0),
         fuel: savedData.maxFuel ?? base.maxFuel,
         hull: savedData.maxHull ?? base.maxHull,
@@ -681,6 +702,9 @@ export default function DriftCore() {
       g.particles = g.particles.filter((p) => p.life > 0);
       if (g.particles.length > 60) g.particles = g.particles.slice(-60);
 
+      g.nebula.forEach(n => { n.x += n.drift; if (n.x > 1300) n.x = -200; if (n.x < -200) n.x = 1300; });
+      if (g.sectorFlash > 0) g.sectorFlash--;
+
       g.asteroids.forEach((a) => {
         a.rot += a.rs;
         if (a.hp <= 0) {
@@ -697,6 +721,7 @@ export default function DriftCore() {
         g.fieldClearTimer = (g.fieldClearTimer || 0) + 1;
         if (g.fieldClearTimer >= 300) {
           g.fieldGen = (g.fieldGen || 0) + 1;
+          g.sectorFlash = 40;
           g.fieldClearTimer = 0;
           g.asteroids = makeField(g.fieldGen);
           g.miningTarget = null;
@@ -704,6 +729,61 @@ export default function DriftCore() {
         }
       } else {
         g.fieldClearTimer = 0;
+      }
+
+      // RANDOM EVENTS — roll every ~900 ticks with ~18% chance
+      if (!g.docked && g.surgeMult <= 1) {
+        if (g.time % 900 === 0 && Math.random() < 0.18) {
+          {
+            const events = ["surge", "storm", "salvage", "pirates", "wormhole"];
+            const id = events[Math.floor(Math.random() * events.length)];
+            let name, msg;
+            if (id === "surge") {
+              name = "Ore Surge";
+              g.surgeMult = 2;
+              g.surgeTimer = 600;
+              msg = "Mining yield doubled for 20s!";
+              A().event();
+            } else if (id === "storm") {
+              const dmg = 8 + Math.random() * 12;
+              g.hull = Math.max(1, g.hull - dmg);
+              name = "Cosmic Storm";
+              msg = `Hull took ${Math.floor(dmg)} damage!`;
+              A().hit();
+            } else if (id === "salvage") {
+              const cr = 40 + Math.floor(Math.random() * 60);
+              addCR(cr);
+              name = "Derelict Pod";
+              msg = `Recovered ${cr} CR from wreckage!`;
+              A().event();
+            } else if (id === "pirates") {
+              const stolen = Math.floor(g.cr * 0.12);
+              g.cr = Math.max(0, g.cr - stolen);
+              g.hull = Math.max(1, g.hull - 10);
+              name = "Pirate Ambush";
+              msg = `Lost ${stolen} CR and 10 hull!`;
+              A().alert();
+            } else if (id === "wormhole") {
+              const alive = g.asteroids.filter(a => a.hp > 0);
+              if (alive.length > 0) {
+                const target = alive[Math.floor(Math.random() * alive.length)];
+                g.sx = target.x + (Math.random() - 0.5) * 60;
+                g.sy = target.y + (Math.random() - 0.5) * 60;
+                g.cx = g.sx - cW / 2;
+                g.cy = g.sy - cH / 2;
+                g.moving = false;
+              }
+              name = "Wormhole";
+              msg = "Teleported to asteroid cluster!";
+              A().warp();
+            }
+            g.activeEvent = { id, name, msg, timer: 180 };
+          }
+        }
+      }
+      if (g.activeEvent && g.activeEvent.timer > 0) {
+        g.activeEvent.timer--;
+        if (g.activeEvent.timer <= 0) g.activeEvent = null;
       }
 
       g.cx += (g.sx - cW / 2 - g.cx) * 0.06;
@@ -720,7 +800,7 @@ export default function DriftCore() {
           miningTarget: g.miningTarget, nearStation: g.nearStation, richVein: g.richVein,
           stranded: g.stranded, hullBreached: g.hullBreached, hullBreachTimer: g.hullBreachTimer,
           contractFailed: g.contractFailed, miningHeat: g.miningHeat, heatOverload: g.heatOverload,
-          fieldGen: g.fieldGen,
+          fieldGen: g.fieldGen, activeEvent: g.activeEvent,
         });
       }
 
@@ -742,6 +822,21 @@ export default function DriftCore() {
         ctx.fillRect(sx, sy, st.s, st.s);
       });
       ctx.globalAlpha = 1;
+
+      g.nebula.forEach(n => {
+        const nx = ((n.x - g.cx * 0.05) % cW + cW * 2) % cW - cW * 0.5;
+        const ny = ((n.y - g.cy * 0.05) % cH + cH * 2) % cH - cH * 0.5;
+        const grad = ctx.createRadialGradient(nx, ny, 0, nx, ny, n.rx);
+        grad.addColorStop(0, `hsla(${n.hue},60%,40%,${n.alpha})`);
+        grad.addColorStop(1, 'transparent');
+        ctx.save();
+        ctx.scale(1, n.ry / n.rx);
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(nx, ny * (n.rx / n.ry), n.rx, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      });
 
       const shakeX = g.screenShake > 0 ? (Math.random() - 0.5) * g.screenShake : 0;
       const shakeY = g.screenShake > 0 ? (Math.random() - 0.5) * g.screenShake : 0;
@@ -776,6 +871,27 @@ export default function DriftCore() {
       ctx.beginPath();
       ctx.arc(g.station.x, g.station.y, 50, 0, Math.PI * 2);
       ctx.strokeStyle = "#44aaee15"; ctx.lineWidth = 1; ctx.stroke();
+
+      // Rotating docking ring
+      ctx.save();
+      ctx.translate(g.station.x, g.station.y);
+      ctx.rotate(g.time * 0.008);
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * Math.PI * 2;
+        ctx.beginPath();
+        ctx.arc(Math.cos(a) * 28, Math.sin(a) * 28, 2.5, 0, Math.PI * 2);
+        ctx.fillStyle = g.nearStation ? "#44aaeebb" : "#44aaee44";
+        ctx.fill();
+      }
+      ctx.restore();
+
+      // Pulse ring
+      const pulse = 0.3 + 0.2 * Math.sin(g.time * 0.05);
+      ctx.beginPath();
+      ctx.arc(g.station.x, g.station.y, g.station.r + 6 + pulse * 4, 0, Math.PI * 2);
+      ctx.strokeStyle = `rgba(68,170,238,${pulse * 0.3})`;
+      ctx.lineWidth = 1;
+      ctx.stroke();
 
       g.asteroids.forEach((ast) => {
         if (ast.hp <= 0) {
@@ -924,6 +1040,32 @@ export default function DriftCore() {
         ctx.globalAlpha = 1;
       }
 
+      if (g.activeEvent && g.activeEvent.timer > 0) {
+        const evColors = { surge: "#ddaa44", storm: "#ff6644", salvage: "#44ddaa", pirates: "#ff4444", wormhole: "#cc55ff" };
+        const evColor = evColors[g.activeEvent.id] || "#88ccee";
+        const fadeAlpha = Math.min(1, g.activeEvent.timer / 30);
+        const bW = 260, bH = 42;
+        const bX = g.cx + cW / 2 - bW / 2, bY = g.cy + cH * 0.18;
+        ctx.globalAlpha = fadeAlpha * 0.88;
+        ctx.fillStyle = "#060a12";
+        ctx.beginPath();
+        ctx.roundRect(bX, bY, bW, bH, 4);
+        ctx.fill();
+        ctx.strokeStyle = evColor;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.roundRect(bX, bY, bW, bH, 4);
+        ctx.stroke();
+        ctx.globalAlpha = fadeAlpha;
+        ctx.fillStyle = evColor;
+        ctx.font = "bold 11px 'Share Tech Mono',monospace"; ctx.textAlign = "center";
+        ctx.fillText(g.activeEvent.name.toUpperCase(), g.cx + cW / 2, bY + 16);
+        ctx.fillStyle = "#b0c0d0";
+        ctx.font = "9px monospace";
+        ctx.fillText(g.activeEvent.msg, g.cx + cW / 2, bY + 32);
+        ctx.globalAlpha = 1;
+      }
+
       const _tc = Object.values(g.cargo).reduce((a, b) => a + b, 0);
       if (_tc >= g.maxCargo) {
         const flash = Math.sin(g.time * 0.15) > 0;
@@ -962,6 +1104,12 @@ export default function DriftCore() {
       }
 
       ctx.restore();
+
+      // Sector transition flash (screen space)
+      if (g.sectorFlash > 0) {
+        ctx.fillStyle = `rgba(100,160,255,${g.sectorFlash / 40 * 0.35})`;
+        ctx.fillRect(0, 0, cW, cH);
+      }
 
       // HUD
       ctx.fillStyle = "#ee8844";
@@ -1055,6 +1203,7 @@ export default function DriftCore() {
       const mx = e.clientX - rect.left + g.cx, my = e.clientY - rect.top + g.cy;
       if (Math.hypot(mx - g.station.x, my - g.station.y) < 50 && g.nearStation) {
         g.docked = true; g.moving = false; g.miningTarget = null;
+        if (!g.contract) g.contract = makeContract(g.fieldGen || 0);
         A().click();
         saveGame(g);
         setUi((p) => ({ ...p, docked: true }));
@@ -1115,9 +1264,10 @@ export default function DriftCore() {
   const doUndock = () => {
     if (!g) return;
     g.docked = false; g.moving = false;
+    if (!g.contract) g.contract = makeContract(g.fieldGen || 0);
     saveGame(g);
     A().click();
-    setUi((p) => ({ ...p, docked: false }));
+    setUi((p) => ({ ...p, docked: false, contract: g.contract }));
     setStationTab("cargo");
   };
   const doRefuel = () => {
@@ -1310,15 +1460,40 @@ export default function DriftCore() {
           </div>
 
           {stationTab === "cargo" && (<>
-            {ui.contract && (
+            {ui.contract ? (
               <div style={{ ...P, borderLeft: "3px solid #44ddaa" }}>
-                <div style={{ fontSize: 10, color: "#44ddaa", fontWeight: 600, marginBottom: 4 }}>&#128203; CONTRACT</div>
-                <div style={{ fontSize: 10, color: "#8a9aaa" }}>
-                  {ui.contract.qty}&times; {ORES[ui.contract.ore].n} &rarr; {ui.contract.reward} CR ({Math.ceil(ui.contract.timer / 30)}s)
+                <div style={{ fontSize: 10, color: "#44ddaa", fontWeight: 600, marginBottom: 6 }}>&#128203; CONTRACT</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                  <div style={{ width: 10, height: 10, borderRadius: "50%", background: ORES[ui.contract.ore].c, flexShrink: 0 }} />
+                  <span style={{ fontSize: 10, color: ORES[ui.contract.ore].c, fontWeight: 600 }}>{ORES[ui.contract.ore].n}</span>
+                  <span style={{ fontSize: 10, color: "#8a9aaa" }}>&times;{ui.contract.qty}</span>
+                  <span style={{ marginLeft: "auto", fontSize: 10, color: "#ddcc66" }}>{ui.contract.reward} CR</span>
                 </div>
-                <button onClick={doFillContract} style={{ ...Bs("#44ddaa", (ui.ore[ui.contract.ore] || 0) < ui.contract.qty), marginTop: 4 }}>
-                  Fill ({ui.ore[ui.contract.ore] || 0}/{ui.contract.qty})
-                </button>
+                <div style={{ fontSize: 9, color: "#4a6a7a", marginBottom: 6 }}>
+                  Have: {ui.ore[ui.contract.ore] || 0}/{ui.contract.qty} &mdash; {Math.ceil(ui.contract.timer / 30)}s remaining
+                </div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button onClick={doFillContract} style={{ ...Bs("#44ddaa", (ui.ore[ui.contract.ore] || 0) < ui.contract.qty) }}>
+                    Fill ({ui.ore[ui.contract.ore] || 0}/{ui.contract.qty})
+                  </button>
+                  <button onClick={() => {
+                    if (!g || g.cr < 25) { A().warn(); return; }
+                    g.contract = makeContract(g.fieldGen || 0);
+                    g.cr -= 25;
+                    A().click();
+                    setUi((p) => ({ ...p, cr: g.cr, contract: g.contract }));
+                  }} style={Bs("#ee8844", !g || g.cr < 25)}>Skip -25 CR</button>
+                </div>
+              </div>
+            ) : (
+              <div style={{ ...P, borderLeft: "3px solid #2a4a3a" }}>
+                <div style={{ fontSize: 10, color: "#4a6a5a", marginBottom: 6 }}>&#128203; NO CONTRACT</div>
+                <button onClick={() => {
+                  if (!g) return;
+                  g.contract = makeContract(g.fieldGen || 0);
+                  A().click();
+                  setUi((p) => ({ ...p, contract: g.contract }));
+                }} style={Bs("#44ddaa")}>Generate Contract</button>
               </div>
             )}
             <div style={P}>
@@ -1342,6 +1517,20 @@ export default function DriftCore() {
                 );
               })}
             </div>
+            {ui.activeEvent && (
+              <div style={{ ...P, borderLeft: "3px solid #cc55ff" }}>
+                <div style={{ fontSize: 10, color: "#cc55ff", fontWeight: 600, marginBottom: 4, letterSpacing: 1 }}>EVENTS LOG</div>
+                {(() => {
+                  const evColors = { surge: "#ddaa44", storm: "#ff6644", salvage: "#44ddaa", pirates: "#ff4444", wormhole: "#cc55ff" };
+                  const evColor = evColors[ui.activeEvent.id] || "#88ccee";
+                  return (
+                    <div style={{ fontSize: 10, color: evColor }}>
+                      {ui.activeEvent.name} &mdash; <span style={{ color: "#8a9aaa" }}>{ui.activeEvent.msg}</span>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
           </>)}
 
           {stationTab === "upgrades" && (
