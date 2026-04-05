@@ -438,6 +438,8 @@ export default function DriftCore() {
       drillBonus: 0, cargoBonus: 1, hullRegen: 0, oreSense: 0,
       asteroids: makeField(), particles: [],
       miningTarget: null, miningProg: 0,
+      drillNeedle: 0, drillSweetSpot: 0, drillSweetSize: 0.6,
+      drillPulseActive: false, lastPulseTime: 0,
       cargo: {}, maxCargo: ship.stats.maxCargo,
       cr: 200,
       cx: 0, cy: 0,
@@ -598,7 +600,16 @@ export default function DriftCore() {
               g.miningHeat = Math.max(0, g.miningHeat - 1.0 * diss);
               if (g.miningHeat <= 0) g.heatOverload = false;
             }
-            const rate = g.heatOverload ? 0 : g.miningRate * g.surgeMult;
+            // Drill pulse animation
+            const needleSpeed = 0.04 + g.miningRate * 0.01;
+            g.drillNeedle = (g.drillNeedle + needleSpeed) % (Math.PI * 2);
+            g.drillSweetSpot = (g.drillSweetSpot + 0.008) % (Math.PI * 2);
+            // Sweet spot narrows for rarer ore (Driftcore hardest)
+            g.drillSweetSize = Math.max(0.25, 0.7 - (ore.val / 215) * 0.45);
+            g.drillPulseActive = !g.heatOverload;
+
+            // Passive efficiency penalty — only get 50% rate unless player pulses
+            const rate = g.heatOverload ? 0 : g.miningRate * g.surgeMult * 0.5;
             g.miningProg += rate;
 
             if (ast.special === "radioactive") g.hull = Math.max(1, g.hull - 0.08);
@@ -1010,13 +1021,49 @@ export default function DriftCore() {
         ctx.fillText(oreLabel, ast.x, ast.y - ast.r - 4);
         if (isMT) {
           const prog = g.miningProg / 60;
+          // Background track
           ctx.beginPath();
           ctx.arc(ast.x, ast.y, ast.r + 7, 0, Math.PI * 2);
           ctx.strokeStyle = "#ffffff11"; ctx.lineWidth = 4; ctx.stroke();
+          // Progress fill
           ctx.beginPath();
           ctx.arc(ast.x, ast.y, ast.r + 7, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * prog);
           ctx.strokeStyle = g.heatOverload ? "#ff4444" : ore.c;
           ctx.lineWidth = 4; ctx.stroke();
+          // Sweet spot arc (green glow)
+          if (g.drillPulseActive) {
+            const ss = g.drillSweetSpot, sw = g.drillSweetSize;
+            ctx.beginPath();
+            ctx.arc(ast.x, ast.y, ast.r + 14, ss - sw/2, ss + sw/2);
+            ctx.strokeStyle = "#44ff88cc"; ctx.lineWidth = 5; ctx.stroke();
+            ctx.beginPath();
+            ctx.arc(ast.x, ast.y, ast.r + 14, ss - sw/2, ss + sw/2);
+            ctx.strokeStyle = "#aaffcc44"; ctx.lineWidth = 9; ctx.stroke();
+          }
+          // Needle
+          if (g.drillPulseActive) {
+            const nx = ast.x + Math.cos(g.drillNeedle) * (ast.r + 14);
+            const ny = ast.y + Math.sin(g.drillNeedle) * (ast.r + 14);
+            ctx.beginPath();
+            ctx.arc(nx, ny, 4, 0, Math.PI * 2);
+            ctx.fillStyle = "#ffffff"; ctx.fill();
+            ctx.beginPath();
+            ctx.moveTo(ast.x, ast.y);
+            ctx.lineTo(nx, ny);
+            ctx.strokeStyle = "#ffffff44"; ctx.lineWidth = 1; ctx.stroke();
+          }
+          // "CLICK!" pulse hint — flash when needle nears sweet spot
+          if (g.drillPulseActive) {
+            const angleDiff = Math.abs(((g.drillNeedle - g.drillSweetSpot + Math.PI*3) % (Math.PI*2)) - Math.PI);
+            if (angleDiff < g.drillSweetSize * 0.8) {
+              const alpha = 1 - angleDiff / (g.drillSweetSize * 0.8);
+              ctx.globalAlpha = alpha;
+              ctx.fillStyle = "#44ff88";
+              ctx.font = "bold 9px monospace"; ctx.textAlign = "center";
+              ctx.fillText("CLICK!", ast.x, ast.y + ast.r + 20);
+              ctx.globalAlpha = 1;
+            }
+          }
         }
       });
 
@@ -1195,6 +1242,10 @@ export default function DriftCore() {
         drawBar(ctx, 8, 86, 90, 7, (g.miningHeat||0)/100, heatCol, g.heatOverload ? "OVERHEAT" : `Heat ${Math.floor(g.miningHeat||0)}%`);
       }
 
+      if (g.miningTarget !== null && g.drillPulseActive) {
+        ctx.fillStyle = "#44ff88aa"; ctx.font = "7px monospace"; ctx.textAlign = "left";
+        ctx.fillText("PULSE: click asteroid in green zone for bonus ore", 8, 103);
+      }
       const sectorNames = ["FERRITE BELT","CALITE RING","BRINITE FIELDS","ORVIUM DEEP","NOVACITE EXPANSE","CRYSOLITE REACH","VOIDSTONE ABYSS","DRIFTCORE SINGULARITY"];
       const sectorIdx = Math.min(g.fieldGen || 0, sectorNames.length - 1);
       ctx.fillStyle = "#2a3a4a"; ctx.font = "7px monospace"; ctx.textAlign = "left";
@@ -1296,6 +1347,37 @@ export default function DriftCore() {
           }
           if (g.miningTarget !== ast.id) {
             g.miningTarget = ast.id; g.miningProg = 0;
+          } else if (g.miningTarget === ast.id && g.drillPulseActive && !g.heatOverload) {
+            // Check if needle is in sweet spot
+            const angleDiff = Math.abs(((g.drillNeedle - g.drillSweetSpot + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+            const hit = angleDiff < g.drillSweetSize / 2;
+            if (hit) {
+              // Power strike
+              const ore = ORES[ast.ore];
+              const totalC = Object.values(g.cargo).reduce((a, b) => a + b, 0);
+              const bonus = Math.min(2, g.maxCargo - totalC);
+              if (bonus > 0) {
+                g.cargo[ast.ore] = (g.cargo[ast.ore] || 0) + bonus;
+                if (g.stats) g.stats.oresMined = (g.stats.oresMined || 0) + bonus;
+              }
+              g.miningHeat = Math.max(0, g.miningHeat - 15);
+              g.screenShake = 3;
+              for (let i = 0; i < 10; i++)
+                g.particles.push({
+                  x: ast.x + (Math.random()-0.5)*ast.r, y: ast.y + (Math.random()-0.5)*ast.r,
+                  vx: (Math.random()-0.5)*4, vy: (Math.random()-0.5)*4,
+                  life: 20, c: "#ffdd44", r: 2 + Math.random()*2,
+                });
+              g.lastPulseTime = g.time;
+              A().sell();
+            } else {
+              // Fumble
+              g.miningHeat = Math.min(100, g.miningHeat + 20);
+              g.screenShake = 5;
+              g.lastPulseTime = g.time;
+              A().warn();
+            }
+            return;
           }
           const d = Math.hypot(g.sx - ast.x, g.sy - ast.y);
           if (d > g.miningRange + ast.r) { g.tx = ast.x; g.ty = ast.y; g.moving = true; }
