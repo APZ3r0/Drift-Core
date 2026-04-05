@@ -147,7 +147,7 @@ const SHIPS = [
     desc: "Balanced starter vessel. Jack of all trades.",
     cost: 0,
     color: "#88ccee",
-    stats: { speed: 1.2, maxFuel: 100, fuelUse: 0.008, maxHull: 100, maxCargo: 30, miningRate: 1, miningRange: 50 },
+    stats: { speed: 1.2, maxFuel: 100, fuelUse: 0.025, maxHull: 100, maxCargo: 30, miningRate: 1, miningRange: 50 },
     passive: "Workhorse — 35% faster heat dissipation. Built for the long haul.",
     passiveFn: () => 1,
     heatDissipation: 1.35,
@@ -159,7 +159,7 @@ const SHIPS = [
     desc: "Massive cargo hold but slow. Sell runs are worth more.",
     cost: 2000,
     color: "#ddaa44",
-    stats: { speed: 0.7, maxFuel: 120, fuelUse: 0.006, maxHull: 130, maxCargo: 60, miningRate: 0.9, miningRange: 45 },
+    stats: { speed: 0.7, maxFuel: 120, fuelUse: 0.018, maxHull: 130, maxCargo: 60, miningRate: 0.9, miningRange: 45 },
     passive: "+20% ore sell value.",
     passiveFn: (g, ctx) => { if (ctx === "sell") return 1.2; return 1; },
   },
@@ -170,7 +170,7 @@ const SHIPS = [
     desc: "Fast and fuel-efficient. Tiny hold — sprint between fields.",
     cost: 5000,
     color: "#44ddaa",
-    stats: { speed: 2.2, maxFuel: 80, fuelUse: 0.004, maxHull: 70, maxCargo: 20, miningRate: 1.1, miningRange: 55 },
+    stats: { speed: 2.2, maxFuel: 80, fuelUse: 0.014, maxHull: 70, maxCargo: 20, miningRate: 1.1, miningRange: 55 },
     passive: "Speed burst on movement — leaves a turquoise trail.",
     passiveFn: () => 1,
   },
@@ -181,7 +181,7 @@ const SHIPS = [
     desc: "Brutal drill power. Fragile hull — events hit harder.",
     cost: 9000,
     color: "#ff6644",
-    stats: { speed: 1.0, maxFuel: 90, fuelUse: 0.010, maxHull: 60, maxCargo: 35, miningRate: 2.2, miningRange: 50 },
+    stats: { speed: 1.0, maxFuel: 90, fuelUse: 0.030, maxHull: 60, maxCargo: 35, miningRate: 2.2, miningRange: 50 },
     passive: "Each asteroid gives +1 bonus ore on depletion.",
     passiveFn: () => 1,
   },
@@ -192,7 +192,7 @@ const SHIPS = [
     desc: "Wide scanner. Sees ore quality. Contract rewards +40%.",
     cost: 12000,
     color: "#cc55ff",
-    stats: { speed: 1.0, maxFuel: 100, fuelUse: 0.007, maxHull: 90, maxCargo: 30, miningRate: 0.9, miningRange: 90 },
+    stats: { speed: 1.0, maxFuel: 100, fuelUse: 0.022, maxHull: 90, maxCargo: 30, miningRate: 0.9, miningRange: 90 },
     passive: "+40% contract rewards. Ore labels show value.",
     passiveFn: (g, ctx) => { if (ctx === "contract") return 1.4; return 1; },
   },
@@ -529,6 +529,7 @@ export default function DriftCore() {
       sectorFlash: 0,
       missions: [],
       missionBoard: [],
+      pirates: [],
       stats: {
         oresMined: 0,
         fieldsCleared: 0,
@@ -676,9 +677,8 @@ export default function DriftCore() {
             g.drillSweetSize = Math.max(0.25, 0.7 - (ore.val / 215) * 0.45);
             g.drillPulseActive = !g.heatOverload;
 
-            // Passive efficiency penalty — only get 50% rate unless player pulses
-            const rate = g.heatOverload ? 0 : g.miningRate * g.surgeMult * 0.5;
-            g.miningProg += rate;
+            // No passive mining — drill progress ONLY advances via pulse clicks
+            // (see onClick handler — each hit adds 25 to miningProg)
 
             if (ast.special === "radioactive") g.hull = Math.max(1, g.hull - 0.08);
             if (ast.special === "radioactive" && g.time % 120 === 0) A().hit();
@@ -825,6 +825,39 @@ export default function DriftCore() {
 
       g.nearStation = Math.hypot(g.sx - g.station.x, g.sy - g.station.y) < 50;
 
+      // ═══ PIRATES ═══
+      if (g.pirates && g.pirates.length > 0) {
+        g.pirates.forEach(p => {
+          const dx = g.sx - p.x, dy = g.sy - p.y;
+          const dist = Math.hypot(dx, dy);
+          p.sa = Math.atan2(dy, dx);
+          // Pirates despawn near station (scared off by dock defenses)
+          const nearSt = Math.hypot(p.x - g.station.x, p.y - g.station.y) < 80;
+          if (nearSt) { p.despawnTimer = 0; return; }
+          if (dist > 8) {
+            p.x += (dx / dist) * p.speed;
+            p.y += (dy / dist) * p.speed;
+          }
+          // Ram damage on contact
+          if (dist < 18) {
+            const stolen = Math.floor(g.cr * 0.10);
+            g.cr = Math.max(0, g.cr - stolen);
+            g.hull = Math.max(1, g.hull - 15);
+            g.screenShake = 12;
+            A().boom();
+            p.despawnTimer = 0; // despawn after hit
+            g.activeEvent = { id:"pirates", name:"Pirate Hit!", msg:`Lost ${stolen} CR and 15 hull!`, timer: 120 };
+          }
+          p.despawnTimer--;
+          // Pirate engine trail
+          if (g.time % 2 === 0)
+            g.particles.push({ x: p.x - Math.cos(p.sa)*8, y: p.y - Math.sin(p.sa)*8,
+              vx:(Math.random()-0.5)*0.5, vy:(Math.random()-0.5)*0.5,
+              life:14, c:"#ff4422", r:1.5+Math.random() });
+        });
+        g.pirates = g.pirates.filter(p => p.despawnTimer > 0);
+      }
+
       if (g.missions) g.missions.forEach(m => {
         if (m.type === "endure" && !g.docked) {
           m.elapsed = (m.elapsed || 0) + 1;
@@ -899,11 +932,17 @@ export default function DriftCore() {
               msg = `Recovered ${cr} CR from wreckage!`;
               A().event();
             } else if (id === "pirates") {
-              const stolen = Math.floor(g.cr * 0.12);
-              g.cr = Math.max(0, g.cr - stolen);
-              g.hull = Math.max(1, g.hull - 10);
+              // Spawn a visible pirate ship that chases the player
+              const angle = Math.random() * Math.PI * 2;
+              g.pirates.push({
+                x: g.sx + Math.cos(angle) * 350,
+                y: g.sy + Math.sin(angle) * 350,
+                speed: 1.2 + g.fieldGen * 0.15,
+                hull: 1, sa: 0,
+                despawnTimer: 900,
+              });
               name = "Pirate Ambush";
-              msg = `Lost ${stolen} CR and 10 hull!`;
+              msg = "A pirate ship is hunting you — run!";
               A().alert();
             } else if (id === "wormhole") {
               const alive = g.asteroids.filter(a => a.hp > 0);
@@ -1226,6 +1265,28 @@ export default function DriftCore() {
         ctx.strokeStyle = "#44ddaa44"; ctx.lineWidth = 1; ctx.stroke();
       }
 
+      // Draw pirate ships
+      if (g.pirates) g.pirates.forEach(p => {
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(p.sa);
+        ctx.beginPath();
+        ctx.moveTo(10, 0); ctx.lineTo(-6, -5); ctx.lineTo(-3, 0); ctx.lineTo(-6, 5); ctx.closePath();
+        ctx.fillStyle = "#cc2222cc"; ctx.fill();
+        ctx.strokeStyle = "#ff4444"; ctx.lineWidth = 1.5; ctx.stroke();
+        ctx.restore();
+        // Warning ring when close
+        const pd = Math.hypot(g.sx - p.x, g.sy - p.y);
+        if (pd < 120) {
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 14 + Math.sin(g.time * 0.2) * 3, 0, Math.PI * 2);
+          ctx.strokeStyle = `rgba(255,60,60,${0.3 + 0.3 * Math.abs(Math.sin(g.time*0.15))})`;
+          ctx.lineWidth = 2; ctx.stroke();
+        }
+        ctx.fillStyle = "#ff4444"; ctx.font = "7px monospace"; ctx.textAlign = "center";
+        ctx.fillText("PIRATE", p.x, p.y - 14);
+      });
+
       if (g.surgeTimer > 0) {
         ctx.fillStyle = "#ddaa44";
         ctx.font = "bold 10px monospace"; ctx.textAlign = "center";
@@ -1373,6 +1434,12 @@ export default function DriftCore() {
         ctx.arc(mc + (a.x - g.sx) * mmSc, mmy + (a.y - g.sy) * mmSc, mmR, 0, Math.PI * 2);
         ctx.fillStyle = mmC; ctx.fill();
       });
+      // Pirates on minimap
+      if (g.pirates) g.pirates.forEach(p => {
+        ctx.beginPath();
+        ctx.arc(mc + (p.x - g.sx) * mmSc, mmy + (p.y - g.sy) * mmSc, 2.5, 0, Math.PI * 2);
+        ctx.fillStyle = "#ff4444"; ctx.fill();
+      });
       ctx.beginPath(); ctx.arc(mc, mmy, 2, 0, Math.PI * 2);
       ctx.fillStyle = "#ddeeff"; ctx.fill();
       ctx.beginPath(); ctx.moveTo(mc, mmy);
@@ -1447,28 +1514,23 @@ export default function DriftCore() {
             const angleDiff = Math.abs(((g.drillNeedle - g.drillSweetSpot + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
             const hit = angleDiff < g.drillSweetSize / 2;
             if (hit) {
-              // Power strike
-              const ore = ORES[ast.ore];
-              const totalC = Object.values(g.cargo).reduce((a, b) => a + b, 0);
-              const bonus = Math.min(2, g.maxCargo - totalC);
-              if (bonus > 0) {
-                g.cargo[ast.ore] = (g.cargo[ast.ore] || 0) + bonus;
-                if (g.stats) g.stats.oresMined = (g.stats.oresMined || 0) + bonus;
-              }
-              g.miningHeat = Math.max(0, g.miningHeat - 15);
+              // Power strike — advance drill progress + bonus ore on depletion
+              g.miningProg = Math.min(59, g.miningProg + 25);
+              g.miningHeat = Math.max(0, g.miningHeat - 10);
               g.screenShake = 3;
-              for (let i = 0; i < 10; i++)
+              for (let i = 0; i < 8; i++)
                 g.particles.push({
                   x: ast.x + (Math.random()-0.5)*ast.r, y: ast.y + (Math.random()-0.5)*ast.r,
                   vx: (Math.random()-0.5)*4, vy: (Math.random()-0.5)*4,
                   life: 20, c: "#ffdd44", r: 2 + Math.random()*2,
                 });
               g.lastPulseTime = g.time;
-              A().sell();
+              A().extract();
             } else {
-              // Fumble
-              g.miningHeat = Math.min(100, g.miningHeat + 20);
-              g.screenShake = 5;
+              // Fumble — heat spike, progress penalty
+              g.miningHeat = Math.min(100, g.miningHeat + 25);
+              g.miningProg = Math.max(0, g.miningProg - 8);
+              g.screenShake = 6;
               g.lastPulseTime = g.time;
               A().warn();
             }
