@@ -502,6 +502,8 @@ export default function DriftCore() {
       miningTarget: null, miningProg: 0,
       drillNeedle: 0, drillSweetSpot: 0, drillSweetSize: 0.6,
       drillPulseActive: false, lastPulseTime: 0,
+      drillCombo: 0, drillComboTimer: 0,
+      orePocketActive: false, orePocketTimer: 0,
       cargo: {}, maxCargo: ship.stats.maxCargo,
       cr: 200,
       cx: 0, cy: 0,
@@ -649,7 +651,7 @@ export default function DriftCore() {
       // AUTO-MINING
       if (g.miningTarget !== null) {
         const ast = g.asteroids.find((a) => a.id === g.miningTarget);
-        if (!ast || ast.hp <= 0) { g.miningTarget = null; g.miningProg = 0; }
+        if (!ast || ast.hp <= 0) { g.miningTarget = null; g.miningProg = 0; g.drillCombo = 0; g.drillComboTimer = 0; g.orePocketActive = false; }
         else {
           const dist = Math.hypot(g.sx - ast.x, g.sy - ast.y);
           if (dist <= g.miningRange + ast.r) {
@@ -670,13 +672,33 @@ export default function DriftCore() {
               g.miningHeat = Math.max(0, g.miningHeat - 1.0 * diss);
               if (g.miningHeat <= 0) g.heatOverload = false;
             }
-            // Drill pulse animation
-            const needleSpeed = 0.04 + g.miningRate * 0.01;
+            // Drill pulse animation — needle and sweet spot both speed up for rarer ore
+            const oreRarity = ore.val / 215; // 0 (Ferrite) → 1 (Driftcore)
+            const needleSpeed = 0.03 + oreRarity * 0.065 + g.miningRate * 0.008;
+            // Sweet spot moves in opposite direction for high-tier ore (tier 4+)
+            const sweetDir = ore.val >= 120 ? -1 : 1;
+            const sweetSpeed = (0.006 + oreRarity * 0.016) * sweetDir;
             g.drillNeedle = (g.drillNeedle + needleSpeed) % (Math.PI * 2);
-            g.drillSweetSpot = (g.drillSweetSpot + 0.008) % (Math.PI * 2);
+            g.drillSweetSpot = ((g.drillSweetSpot + sweetSpeed) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2);
             // Sweet spot narrows for rarer ore (Driftcore hardest)
-            g.drillSweetSize = Math.max(0.25, 0.7 - (ore.val / 215) * 0.45);
+            g.drillSweetSize = Math.max(0.22, 0.72 - oreRarity * 0.50);
             g.drillPulseActive = !g.heatOverload;
+
+            // Combo timer decay
+            if (g.drillComboTimer > 0) {
+              g.drillComboTimer--;
+              if (g.drillComboTimer <= 0) g.drillCombo = 0;
+            }
+
+            // Ore pocket reaction events — random crack that rewards quick clicking
+            if (!g.orePocketActive && !g.heatOverload && g.time % 70 === 0 && Math.random() < 0.10) {
+              g.orePocketActive = true;
+              g.orePocketTimer = 50; // ~1.7s to react
+            }
+            if (g.orePocketActive) {
+              g.orePocketTimer--;
+              if (g.orePocketTimer <= 0) g.orePocketActive = false;
+            }
 
             // No passive mining — drill progress ONLY advances via pulse clicks
             // (see onClick handler — each hit adds 25 to miningProg)
@@ -1201,6 +1223,36 @@ export default function DriftCore() {
               ctx.globalAlpha = 1;
             }
           }
+
+          // Combo counter display
+          if ((g.drillCombo || 0) >= 2) {
+            const comboColors = ["","","#ff8844","#ff4488","#cc44ff","#44ffcc"];
+            const cCol = comboColors[Math.min(g.drillCombo, 5)];
+            const cPulse = 0.7 + 0.3 * Math.abs(Math.sin(g.time * 0.18));
+            ctx.globalAlpha = cPulse;
+            ctx.fillStyle = cCol;
+            ctx.font = `bold ${10 + g.drillCombo}px monospace`; ctx.textAlign = "center";
+            ctx.fillText(`${g.drillCombo}x COMBO`, ast.x, ast.y - ast.r - 30);
+            ctx.globalAlpha = 1;
+            // Glow ring that intensifies with combo
+            ctx.beginPath();
+            ctx.arc(ast.x, ast.y, ast.r + 20, 0, Math.PI * 2);
+            ctx.strokeStyle = `${cCol}${Math.floor(cPulse * 40 + g.drillCombo * 8).toString(16).padStart(2,'0')}`;
+            ctx.lineWidth = 1 + g.drillCombo * 0.5; ctx.stroke();
+          }
+
+          // Ore pocket flash
+          if (g.orePocketActive && g.orePocketTimer > 0) {
+            const flash = Math.sin(g.time * 0.45) > 0;
+            if (flash) {
+              const urgency = g.orePocketTimer / 50;
+              ctx.globalAlpha = 0.6 + urgency * 0.4;
+              ctx.fillStyle = "#ffdd44";
+              ctx.font = "bold 10px monospace"; ctx.textAlign = "center";
+              ctx.fillText("\u26A1 VEIN CRACK \u2014 CLICK NOW!", ast.x, ast.y + ast.r + 34);
+              ctx.globalAlpha = 1;
+            }
+          }
         }
       });
 
@@ -1402,8 +1454,10 @@ export default function DriftCore() {
       }
 
       if (g.miningTarget !== null && g.drillPulseActive) {
-        ctx.fillStyle = "#44ff88aa"; ctx.font = "7px monospace"; ctx.textAlign = "left";
-        ctx.fillText("PULSE: click asteroid in green zone for bonus ore", 8, 103);
+        const comboHint = (g.drillCombo||0) >= 2 ? ` · ${g.drillCombo}x COMBO` : "";
+        ctx.fillStyle = (g.drillCombo||0) >= 3 ? "#ff8844aa" : "#44ff88aa";
+        ctx.font = "7px monospace"; ctx.textAlign = "left";
+        ctx.fillText(`PULSE: hit green zone to mine · miss = combo reset${comboHint}`, 8, 103);
       }
       const sectorNames = ["FERRITE BELT","CALITE RING","BRINITE FIELDS","ORVIUM DEEP","NOVACITE EXPANSE","CRYSOLITE REACH","VOIDSTONE ABYSS","DRIFTCORE SINGULARITY"];
       const sectorIdx = Math.min(g.fieldGen || 0, sectorNames.length - 1);
@@ -1513,31 +1567,51 @@ export default function DriftCore() {
           }
           if (g.miningTarget !== ast.id) {
             g.miningTarget = ast.id; g.miningProg = 0;
+            g.drillCombo = 0; g.drillComboTimer = 0; g.orePocketActive = false;
           } else if (g.miningTarget === ast.id && g.drillPulseActive && !g.heatOverload) {
             // Check if needle is in sweet spot
             const angleDiff = Math.abs(((g.drillNeedle - g.drillSweetSpot + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
             const hit = angleDiff < g.drillSweetSize / 2;
             if (hit) {
-              // Power strike — advance drill progress + bonus ore on depletion
-              g.miningProg += 25;
+              // Build combo (max 5)
+              g.drillCombo = Math.min((g.drillCombo || 0) + 1, 5);
+              g.drillComboTimer = 150; // ~5s window to keep combo
+              const comboMult = 1 + (g.drillCombo - 1) * 0.6; // 1x, 1.6x, 2.2x, 2.8x, 3.4x
+              g.miningProg += Math.floor(22 * comboMult);
               g.miningHeat = Math.max(0, g.miningHeat - 10);
-              g.screenShake = 3;
-              for (let i = 0; i < 8; i++)
+              g.screenShake = 2 + g.drillCombo;
+              const comboColors = ["#ffdd44","#ffdd44","#ff8844","#ff4488","#cc44ff","#44ffcc"];
+              const pColor = comboColors[Math.min(g.drillCombo, 5)];
+              const pCount = 6 + g.drillCombo * 3;
+              for (let i = 0; i < pCount; i++)
                 g.particles.push({
                   x: ast.x + (Math.random()-0.5)*ast.r, y: ast.y + (Math.random()-0.5)*ast.r,
-                  vx: (Math.random()-0.5)*4, vy: (Math.random()-0.5)*4,
-                  life: 20, c: "#ffdd44", r: 2 + Math.random()*2,
+                  vx: (Math.random()-0.5)*(3 + g.drillCombo), vy: (Math.random()-0.5)*(3 + g.drillCombo),
+                  life: 16 + g.drillCombo * 4, c: pColor, r: 1.5 + Math.random()*2,
                 });
-              g.lastPulseTime = g.time;
-              A().extract();
+              // Ore pocket bonus if active
+              if (g.orePocketActive) {
+                g.orePocketActive = false; g.orePocketTimer = 0;
+                const _tc2 = Object.values(g.cargo).reduce((a, b) => a + b, 0);
+                const pocketOre = Math.min(3, g.maxCargo - _tc2);
+                if (pocketOre > 0) {
+                  g.cargo[ast.ore] = (g.cargo[ast.ore] || 0) + pocketOre;
+                  if (g.stats) g.stats.oresMined = (g.stats.oresMined || 0) + pocketOre;
+                  g.richVein = true; g.richVeinTimer = 90;
+                }
+                A().sell();
+              } else {
+                A().extract();
+              }
             } else {
-              // Fumble — heat spike, progress penalty
+              // Fumble — heat spike, progress penalty, combo reset
+              g.drillCombo = 0; g.drillComboTimer = 0;
               g.miningHeat = Math.min(100, g.miningHeat + 25);
               g.miningProg = Math.max(0, g.miningProg - 8);
               g.screenShake = 6;
-              g.lastPulseTime = g.time;
               A().warn();
             }
+            g.lastPulseTime = g.time;
             return;
           }
           const d = Math.hypot(g.sx - ast.x, g.sy - ast.y);
