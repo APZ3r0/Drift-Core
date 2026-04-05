@@ -362,6 +362,55 @@ function makeField(gen = 0) {
   return asts;
 }
 
+const MISSION_TYPES = [
+  {
+    id: "haul",
+    label: "HAUL",
+    color: "#ddaa44",
+    gen: (fieldGen) => {
+      const oreId = Math.min(7, fieldGen + Math.floor(Math.random() * 2));
+      const qty = 6 + fieldGen * 2 + Math.floor(Math.random() * 5);
+      const reward = Math.round(qty * ORES[oreId].val * 2.2 / 5) * 5;
+      return { type:"haul", oreId, qty, reward, timer: 2400 + fieldGen*300,
+        desc: `Deliver ${qty}× ${ORES[oreId].n} to station`, progress: 0 };
+    },
+  },
+  {
+    id: "survey",
+    label: "SURVEY",
+    color: "#44aacc",
+    gen: (fieldGen) => {
+      const count = 3 + fieldGen;
+      const reward = 120 + fieldGen * 80 + Math.floor(Math.random() * 100);
+      return { type:"survey", count, reward, timer: 3000,
+        desc: `Mine ore from ${count} different asteroids`, visited: new Set(), progress: 0 };
+    },
+  },
+  {
+    id: "salvage",
+    label: "SALVAGE",
+    color: "#44ddaa",
+    gen: (fieldGen) => {
+      const target = 300 + fieldGen * 200 + Math.floor(Math.random() * 200);
+      const reward = Math.round(target * 0.4 / 5) * 5;
+      return { type:"salvage", target, reward, timer: 2700 + fieldGen*200,
+        desc: `Collect ore worth ${target} CR total`, crCollected: 0, progress: 0 };
+    },
+  },
+  {
+    id: "endure",
+    label: "ENDURE",
+    color: "#cc55ff",
+    gen: (fieldGen) => {
+      if (fieldGen < 1) return null; // only available sector 2+
+      const seconds = 45 + fieldGen * 15;
+      const reward = 200 + fieldGen * 150;
+      return { type:"endure", seconds, reward, timer: seconds * 60 + 300,
+        desc: `Survive ${seconds}s in deep space (don't dock)`, elapsed: 0, progress: 0 };
+    },
+  },
+];
+
 function makeContract(fieldGen = 0) {
   const oreId = Math.min(7, fieldGen + Math.floor(Math.random() * 3));
   const ore = ORES[oreId];
@@ -370,6 +419,17 @@ function makeContract(fieldGen = 0) {
   const reward = Math.round(rawReward / 5) * 5;
   const timer = 1800 + fieldGen * 300;
   return { ore: oreId, qty, reward, timer };
+}
+
+function generateMissionBoard(fieldGen) {
+  const board = [];
+  const shuffled = [...MISSION_TYPES].sort(() => Math.random() - 0.5);
+  for (const mt of shuffled) {
+    if (board.length >= 3) break;
+    const m = mt.gen(fieldGen);
+    if (m) board.push(m);
+  }
+  return board;
 }
 
 // ═══════════════════════════════════════════
@@ -391,6 +451,8 @@ function saveGame(g) {
       cargo: g.cargo, contract: g.contract,
       market: g.market,
       stats: g.stats,
+      missions: (g.missions||[]).map(m => m.type==="survey" ? {...m, visited:[...m.visited]} : m),
+      missionBoard: g.missionBoard,
     };
     localStorage.setItem(SAVE_KEY, JSON.stringify(save));
   } catch(_) {}
@@ -465,6 +527,8 @@ export default function DriftCore() {
       richVein: false,
       richVeinTimer: 0,
       sectorFlash: 0,
+      missions: [],
+      missionBoard: [],
       stats: {
         oresMined: 0,
         fieldsCleared: 0,
@@ -505,10 +569,14 @@ export default function DriftCore() {
         contract: savedData.contract ?? base.contract,
         market: savedData.market ?? base.market,
         stats: savedData.stats ?? base.stats,
+        missions: savedData.missions ?? base.missions,
+        missionBoard: savedData.missionBoard ?? base.missionBoard,
         asteroids: makeField(savedData.fieldGen ?? 0),
         fuel: savedData.maxFuel ?? base.maxFuel,
         hull: savedData.maxHull ?? base.maxHull,
       });
+      // Restore visited Sets for survey missions
+      if (base.missions) base.missions = base.missions.map(m => m.type==="survey" ? {...m, visited: new Set(m.visited||[])} : m);
     }
     return base;
   }, []);
@@ -644,6 +712,18 @@ export default function DriftCore() {
                 const added = Math.min(oreToAdd, g.maxCargo - totalC);
                 g.cargo[ast.ore] = (g.cargo[ast.ore] || 0) + added;
                 if (g.stats) g.stats.oresMined = (g.stats.oresMined || 0) + added;
+                // Update mission progress
+                if (g.missions) g.missions.forEach(m => {
+                  if (m.type === "survey" && g.miningTarget !== null) {
+                    m.visited.add(g.miningTarget);
+                    m.progress = Math.min(1, m.visited.size / m.count);
+                  }
+                  if (m.type === "salvage") {
+                    const ore = ORES[ast.ore];
+                    m.crCollected = (m.crCollected || 0) + added * ore.val;
+                    m.progress = Math.min(1, m.crCollected / m.target);
+                  }
+                });
               }
               A().extract();
 
@@ -744,6 +824,20 @@ export default function DriftCore() {
       else g.contractFailed = false;
 
       g.nearStation = Math.hypot(g.sx - g.station.x, g.sy - g.station.y) < 50;
+
+      if (g.missions) g.missions.forEach(m => {
+        if (m.type === "endure" && !g.docked) {
+          m.elapsed = (m.elapsed || 0) + 1;
+          m.progress = Math.min(1, m.elapsed / (m.seconds * 60));
+        }
+        // Countdown timers
+        if (!g.docked) { m.timer--; }
+      });
+      // Expire missions
+      if (g.missions) g.missions = g.missions.filter(m => {
+        if (m.timer <= 0) { g.cr = Math.max(0, g.cr - 30); return false; }
+        return true;
+      });
 
       g.particles.forEach((p) => { p.x += p.vx; p.y += p.vy; p.life--; p.vx *= 0.95; p.vy *= 0.95; });
       g.particles = g.particles.filter((p) => p.life > 0);
