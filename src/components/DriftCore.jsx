@@ -336,12 +336,18 @@ function makeAsteroid(x, y, id, tier) {
     };
   });
   const yieldAmt = 3 + Math.floor(Math.random() * 6) + tier * 2;
+  const roll = Math.random();
+  let special = null;
+  if (tier >= 1 && roll < 0.06) special = "golden";
+  if (tier >= 2 && roll < 0.04) special = "crystal";
+  if (tier >= 3 && roll < 0.025) special = "radioactive";
   return {
     id, x, y, r, ore: oid, shape,
     hp: yieldAmt, maxHp: yieldAmt,
     rot: Math.random() * Math.PI * 2,
     rs: (Math.random() - 0.5) * 0.003,
     miningProg: 0,
+    special,
   };
 }
 
@@ -383,6 +389,7 @@ function saveGame(g) {
       maxCargo: g.maxCargo, miningRate: g.miningRate,
       miningRange: g.miningRange, fieldGen: g.fieldGen,
       cargo: g.cargo, contract: g.contract,
+      market: g.market,
     };
     localStorage.setItem(SAVE_KEY, JSON.stringify(save));
   } catch(_) {}
@@ -440,6 +447,8 @@ export default function DriftCore() {
       station: { x: 500, y: 400, r: 24 }, docked: false,
       surgeMult: 1, surgeTimer: 0,
       contract: null,
+      market: Object.fromEntries(ORES.map(o => [o.id, 1.0])),
+      marketHistory: Object.fromEntries(ORES.map(o => [o.id, [1.0]])),
       time: 0,
       selected: true,
       nearStation: false,
@@ -482,6 +491,7 @@ export default function DriftCore() {
         fieldGen: savedData.fieldGen ?? base.fieldGen,
         cargo: savedData.cargo ?? base.cargo,
         contract: savedData.contract ?? base.contract,
+        market: savedData.market ?? base.market,
         asteroids: makeField(savedData.fieldGen ?? 0),
         fuel: savedData.maxFuel ?? base.maxFuel,
         hull: savedData.maxHull ?? base.maxHull,
@@ -578,6 +588,9 @@ export default function DriftCore() {
             }
             const rate = g.heatOverload ? 0 : g.miningRate * g.surgeMult;
             g.miningProg += rate;
+
+            if (ast.special === "radioactive") g.hull = Math.max(1, g.hull - 0.08);
+            if (ast.special === "radioactive" && g.time % 120 === 0) A().hit();
 
             if (!g.heatOverload && g.time % 4 === 0) {
               g.particles.push({
