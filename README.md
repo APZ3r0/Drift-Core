@@ -12,16 +12,25 @@ A browser-based asteroid mining game built with React and the Web Audio API. Min
 ```bash
 # 1. Clone the repo
 git clone https://github.com/APZ3r0/Drift-Core.git
-cd Drift-Core
 
-# 2. Install dependencies
+# 2. Enter the project directory
+cd Drift-Core
+# Full path on this machine: /home/user/Drift-Core
+
+# 3. Install dependencies
 npm install
 
-# 3. Start the dev server
+# 4. Start the dev server
 npm run dev
 ```
 
 Then open **http://localhost:5173** in your browser.
+
+> **Already cloned?** Just navigate to the folder and run the dev server:
+> ```bash
+> cd /home/user/Drift-Core
+> npm run dev
+> ```
 
 ## Build for production
 
