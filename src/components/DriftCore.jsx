@@ -1414,6 +1414,7 @@ export default function DriftCore() {
       if (Math.hypot(mx - g.station.x, my - g.station.y) < 50 && g.nearStation) {
         g.docked = true; g.moving = false; g.miningTarget = null;
         if (!g.contract) g.contract = makeContract(g.fieldGen || 0);
+        if (!g.missionBoard || g.missionBoard.length === 0) g.missionBoard = generateMissionBoard(g.fieldGen || 0);
         // Fluctuate market prices
         ORES.forEach(o => {
           const change = (Math.random() - 0.48) * 0.25; // slight upward bias
@@ -1504,6 +1505,7 @@ export default function DriftCore() {
           if (g.nearStation) {
             g.docked = true; g.moving = false; g.miningTarget = null;
             if (!g.contract) g.contract = makeContract(g.fieldGen || 0);
+            if (!g.missionBoard || g.missionBoard.length === 0) g.missionBoard = generateMissionBoard(g.fieldGen || 0);
             A().click(); saveGame(g); setUi(p => ({ ...p, docked: true }));
           }
           break;
@@ -1738,40 +1740,80 @@ export default function DriftCore() {
           </div>
 
           {stationTab === "cargo" && (<>
-            {ui.contract ? (
-              <div style={{ ...P, borderLeft: "3px solid #44ddaa" }}>
-                <div style={{ fontSize: 10, color: "#44ddaa", fontWeight: 600, marginBottom: 6 }}>&#128203; CONTRACT</div>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                  <div style={{ width: 10, height: 10, borderRadius: "50%", background: ORES[ui.contract.ore].c, flexShrink: 0 }} />
-                  <span style={{ fontSize: 10, color: ORES[ui.contract.ore].c, fontWeight: 600 }}>{ORES[ui.contract.ore].n}</span>
-                  <span style={{ fontSize: 10, color: "#8a9aaa" }}>&times;{ui.contract.qty}</span>
-                  <span style={{ marginLeft: "auto", fontSize: 10, color: "#ddcc66" }}>{ui.contract.reward} CR</span>
-                </div>
-                <div style={{ fontSize: 9, color: "#4a6a7a", marginBottom: 6 }}>
-                  Have: {ui.ore[ui.contract.ore] || 0}/{ui.contract.qty} &mdash; {Math.ceil(ui.contract.timer / 30)}s remaining
-                </div>
-                <div style={{ display: "flex", gap: 6 }}>
-                  <button onClick={doFillContract} style={{ ...Bs("#44ddaa", (ui.ore[ui.contract.ore] || 0) < ui.contract.qty) }}>
-                    Fill ({ui.ore[ui.contract.ore] || 0}/{ui.contract.qty})
-                  </button>
-                  <button onClick={() => {
-                    if (!g || g.cr < 25) { A().warn(); return; }
-                    g.contract = makeContract(g.fieldGen || 0);
-                    g.cr -= 25;
-                    A().click();
-                    setUi((p) => ({ ...p, cr: g.cr, contract: g.contract }));
-                  }} style={Bs("#ee8844", !g || g.cr < 25)}>Skip -25 CR</button>
-                </div>
-              </div>
-            ) : (
-              <div style={{ ...P, borderLeft: "3px solid #2a4a3a" }}>
-                <div style={{ fontSize: 10, color: "#4a6a5a", marginBottom: 6 }}>&#128203; NO CONTRACT</div>
+            {/* Mission board */}
+            <div style={P}>
+              <div style={{ fontSize: 11, color: "#88ccee", fontFamily:"'Rajdhani'", fontWeight:600, marginBottom:6 }}>ACTIVE MISSIONS ({(g?.missions||[]).length}/3)</div>
+              {(g?.missions||[]).length === 0 && <div style={{ fontSize:9, color:"#2a3a4a", marginBottom:4 }}>No active missions. Accept from the board below.</div>}
+              {(g?.missions||[]).map((m, i) => {
+                const mt = MISSION_TYPES.find(t => t.id === m.type);
+                const pct = m.progress || 0;
+                const done = pct >= 1;
+                const canClaim = done && m.type === "haul" ? (g?.cargo?.[m.oreId]||0) >= m.qty : done;
+                return (
+                  <div key={i} style={{ padding:"6px 8px", marginBottom:4, background:"#0a1018", borderRadius:3, border:`1px solid ${mt?.color||"#44aaee"}44` }}>
+                    <div style={{ display:"flex", justifyContent:"space-between", marginBottom:3 }}>
+                      <span style={{ fontSize:9, color:mt?.color, fontWeight:600 }}>[{mt?.label}] {m.desc}</span>
+                      <span style={{ fontSize:8, color:"#4a5a6a" }}>{Math.ceil(m.timer/60)}s · {m.reward}CR</span>
+                    </div>
+                    <div style={{ background:"#0a1018", borderRadius:2, height:4, marginBottom:4 }}>
+                      <div style={{ background: done ? "#44ddaa" : (mt?.color||"#44aaee"), borderRadius:2, height:4, width:`${Math.round(pct*100)}%`, transition:"width 0.3s" }} />
+                    </div>
+                    {done && (
+                      <button onClick={() => {
+                        if (!g) return;
+                        if (m.type === "haul") {
+                          if ((g.cargo[m.oreId]||0) < m.qty) { A().warn(); return; }
+                          g.cargo[m.oreId] -= m.qty;
+                          if (g.cargo[m.oreId] <= 0) delete g.cargo[m.oreId];
+                        }
+                        const ship = SHIPS.find(s=>s.id===g.shipId)||SHIPS[0];
+                        const mult = ship.passiveFn(g,"contract");
+                        const earned = Math.floor(m.reward * (isFinite(mult)?mult:1));
+                        g.cr += earned;
+                        if (g.stats) { g.stats.crEarned=(g.stats.crEarned||0)+earned; g.stats.contractsFilled=(g.stats.contractsFilled||0)+1; }
+                        g.missions = g.missions.filter((_,j)=>j!==i);
+                        A().click(); saveGame(g);
+                        setUi(p=>({...p, cr:g.cr, ore:{...g.cargo}}));
+                      }} style={Bs("#44ddaa")}>CLAIM {m.reward} CR</button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Mission board — offered missions */}
+            {(g?.missionBoard||[]).length > 0 && (
+              <div style={P}>
+                <div style={{ fontSize:11, color:"#ddaa44", fontFamily:"'Rajdhani'", fontWeight:600, marginBottom:6 }}>MISSION BOARD</div>
+                {(g?.missionBoard||[]).map((m, i) => {
+                  const mt = MISSION_TYPES.find(t=>t.id===m.type);
+                  const full = (g?.missions||[]).length >= 3;
+                  return (
+                    <div key={i} style={{ padding:"6px 8px", marginBottom:4, background:"#0c1420", borderRadius:3, border:`1px solid #1a2a35` }}>
+                      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                        <div>
+                          <span style={{ fontSize:9, color:mt?.color, fontWeight:600 }}>[{mt?.label}] </span>
+                          <span style={{ fontSize:9, color:"#8a9aaa" }}>{m.desc}</span>
+                        </div>
+                        <button onClick={() => {
+                          if (!g || full) { A().warn(); return; }
+                          if (m.type === "survey") m.visited = new Set();
+                          g.missions = [...(g.missions||[]), m];
+                          g.missionBoard = (g.missionBoard||[]).filter((_,j)=>j!==i);
+                          A().click();
+                          setUi(p=>({...p}));
+                        }} style={Bs(mt?.color||"#44aaee", full)}>{full?"FULL":"ACCEPT"}</button>
+                      </div>
+                      <div style={{ fontSize:8, color:"#4a5a6a", marginTop:2 }}>{m.reward} CR · {Math.ceil(m.timer/60)}s limit</div>
+                    </div>
+                  );
+                })}
                 <button onClick={() => {
                   if (!g) return;
-                  g.contract = makeContract(g.fieldGen || 0);
-                  A().click();
-                  setUi((p) => ({ ...p, contract: g.contract }));
-                }} style={Bs("#44ddaa")}>Generate Contract</button>
+                  if (g.cr < 20) { A().warn(); return; }
+                  g.cr -= 20; g.missionBoard = generateMissionBoard(g.fieldGen||0);
+                  A().click(); setUi(p=>({...p, cr:g.cr}));
+                }} style={Bs("#4a5a6a")}>Refresh board -20 CR</button>
               </div>
             )}
             <div style={P}>
