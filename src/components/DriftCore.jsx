@@ -390,6 +390,7 @@ function saveGame(g) {
       miningRange: g.miningRange, fieldGen: g.fieldGen,
       cargo: g.cargo, contract: g.contract,
       market: g.market,
+      stats: g.stats,
     };
     localStorage.setItem(SAVE_KEY, JSON.stringify(save));
   } catch(_) {}
@@ -462,6 +463,15 @@ export default function DriftCore() {
       richVein: false,
       richVeinTimer: 0,
       sectorFlash: 0,
+      stats: {
+        oresMined: 0,
+        fieldsCleared: 0,
+        crEarned: 0,
+        eventsEncountered: 0,
+        contractsFilled: 0,
+        distanceTravelled: 0,
+        peakCr: 200,
+      },
       nebula: Array.from({ length: 6 }, () => ({
         x: Math.random() * 1200,
         y: Math.random() * 900,
@@ -492,6 +502,7 @@ export default function DriftCore() {
         cargo: savedData.cargo ?? base.cargo,
         contract: savedData.contract ?? base.contract,
         market: savedData.market ?? base.market,
+        stats: savedData.stats ?? base.stats,
         asteroids: makeField(savedData.fieldGen ?? 0),
         fuel: savedData.maxFuel ?? base.maxFuel,
         hull: savedData.maxHull ?? base.maxHull,
@@ -542,6 +553,7 @@ export default function DriftCore() {
         if (dist > 3 && g.fuel > 0) {
           const mx = (dx / dist) * g.speed, my = (dy / dist) * g.speed;
           g.sx += mx; g.sy += my;
+          if (g.stats) g.stats.distanceTravelled = (g.stats.distanceTravelled || 0) + g.speed;
           g.sa = Math.atan2(dy, dx);
           g.fuel = Math.max(0, g.fuel - (g.fuelUse || 0.008));
           const isSpecter = g.shipId === "specter";
@@ -607,6 +619,7 @@ export default function DriftCore() {
               const bonus = g.drillBonus || 0;
               const totalC = Object.values(g.cargo).reduce((a, b) => a + b, 0);
               let oreToAdd = 1 + bonus;
+              if (ast.special === "golden") oreToAdd *= 3;
 
               const richStrike = Math.random() < 0.12;
               if (richStrike) {
@@ -617,7 +630,9 @@ export default function DriftCore() {
               }
 
               if (totalC < g.maxCargo) {
-                g.cargo[ast.ore] = (g.cargo[ast.ore] || 0) + Math.min(oreToAdd, g.maxCargo - totalC);
+                const added = Math.min(oreToAdd, g.maxCargo - totalC);
+                g.cargo[ast.ore] = (g.cargo[ast.ore] || 0) + added;
+                if (g.stats) g.stats.oresMined = (g.stats.oresMined || 0) + added;
               }
               A().extract();
 
@@ -630,6 +645,14 @@ export default function DriftCore() {
                 });
 
               if (ast.hp <= 0) {
+                if (ast.special === "crystal") {
+                  const tier = Math.floor(Math.random() * (1 + g.fieldGen));
+                  [1, 2].forEach(off => {
+                    const na = makeAsteroid(ast.x + off * 40, ast.y + off * 30, 900 + off, Math.max(0, tier - 1));
+                    na.special = null; na.r *= 0.65; na.maxHp = 2; na.hp = 2;
+                    g.asteroids.push(na);
+                  });
+                }
                 if (g.shipId === "ravager") {
                   const tc2 = Object.values(g.cargo).reduce((a, b) => a + b, 0);
                   if (tc2 < g.maxCargo) g.cargo[ast.ore] = (g.cargo[ast.ore] || 0) + 1;
@@ -734,6 +757,7 @@ export default function DriftCore() {
         g.fieldClearTimer = (g.fieldClearTimer || 0) + 1;
         if (g.fieldClearTimer >= 300) {
           g.fieldGen = (g.fieldGen || 0) + 1;
+          if (g.stats) g.stats.fieldsCleared = (g.stats.fieldsCleared || 0) + 1;
           g.sectorFlash = 40;
           g.fieldClearTimer = 0;
           g.asteroids = makeField(g.fieldGen);
@@ -791,6 +815,7 @@ export default function DriftCore() {
               A().warp();
             }
             g.activeEvent = { id, name, msg, timer: 180 };
+            if (g.stats) g.stats.eventsEncountered = (g.stats.eventsEncountered || 0) + 1;
           }
         }
       }
@@ -816,6 +841,8 @@ export default function DriftCore() {
           fieldGen: g.fieldGen, activeEvent: g.activeEvent,
         });
       }
+
+      if (g.stats && g.cr > (g.stats.peakCr || 0)) g.stats.peakCr = g.cr;
 
       render();
       animId = requestAnimationFrame(tick);
@@ -949,6 +976,29 @@ export default function DriftCore() {
           ctx.stroke();
         }
         ctx.restore();
+        // Special asteroid overlays
+        if (ast.special === "golden") {
+          ctx.save(); ctx.translate(ast.x, ast.y);
+          ctx.beginPath(); ctx.arc(0, 0, ast.r + 4, 0, Math.PI * 2);
+          ctx.strokeStyle = `#ffdd44${Math.floor(60 + 40*Math.sin(g.time*0.08)).toString(16).padStart(2,"0")}`;
+          ctx.lineWidth = 3; ctx.stroke(); ctx.restore();
+          ctx.fillStyle = "#ffdd44"; ctx.font = "bold 8px monospace"; ctx.textAlign = "center";
+          ctx.fillText("\u2726 RICH", ast.x, ast.y - ast.r - 14);
+        } else if (ast.special === "crystal") {
+          ctx.save(); ctx.translate(ast.x, ast.y);
+          ctx.beginPath(); ctx.arc(0, 0, ast.r + 4, 0, Math.PI * 2);
+          ctx.strokeStyle = `#aaeeff${Math.floor(50 + 50*Math.sin(g.time*0.12)).toString(16).padStart(2,"0")}`;
+          ctx.lineWidth = 2; ctx.stroke(); ctx.restore();
+          ctx.fillStyle = "#88ddff"; ctx.font = "bold 8px monospace"; ctx.textAlign = "center";
+          ctx.fillText("\u25C8 SPLITS", ast.x, ast.y - ast.r - 14);
+        } else if (ast.special === "radioactive") {
+          ctx.save(); ctx.translate(ast.x, ast.y);
+          ctx.beginPath(); ctx.arc(0, 0, ast.r + 6 + Math.sin(g.time*0.1)*3, 0, Math.PI * 2);
+          ctx.strokeStyle = `#44ff66${Math.floor(40 + 60*Math.abs(Math.sin(g.time*0.1))).toString(16).padStart(2,"0")}`;
+          ctx.lineWidth = 2.5; ctx.stroke(); ctx.restore();
+          ctx.fillStyle = "#44ff66"; ctx.font = "bold 8px monospace"; ctx.textAlign = "center";
+          ctx.fillText("\u2622 TOXIC", ast.x, ast.y - ast.r - 14);
+        }
         const pct = ast.hp / ast.maxHp;
         ctx.fillStyle = "#000000aa";
         ctx.fillRect(ast.x - ast.r * 0.6, ast.y + ast.r + 4, ast.r * 1.2, 3);
@@ -1172,9 +1222,11 @@ export default function DriftCore() {
       ctx.fillStyle = "#44aaee"; ctx.fill();
       g.asteroids.forEach((a) => {
         if (a.hp <= 0) return;
+        const mmR = a.special === "golden" ? 3 : a.special === "crystal" ? 2.5 : a.special === "radioactive" ? 2.5 : 1.5;
+        const mmC = a.special === "golden" ? "#ffdd44" : a.special === "crystal" ? "#88ddff" : a.special === "radioactive" ? "#44ff66" : ORES[a.ore].c + "88";
         ctx.beginPath();
-        ctx.arc(mc + (a.x - g.sx) * mmSc, mmy + (a.y - g.sy) * mmSc, 1.5, 0, Math.PI * 2);
-        ctx.fillStyle = ORES[a.ore].c + "88"; ctx.fill();
+        ctx.arc(mc + (a.x - g.sx) * mmSc, mmy + (a.y - g.sy) * mmSc, mmR, 0, Math.PI * 2);
+        ctx.fillStyle = mmC; ctx.fill();
       });
       ctx.beginPath(); ctx.arc(mc, mmy, 2, 0, Math.PI * 2);
       ctx.fillStyle = "#ddeeff"; ctx.fill();
@@ -1197,7 +1249,7 @@ export default function DriftCore() {
 
       ctx.fillStyle = "#1a2a35"; ctx.font = "8px monospace"; ctx.textAlign = "center";
       ctx.fillText(
-        "Click/tap to move \u00B7 Click asteroid to mine \u00B7 Near station: click to dock",
+        "Click/tap or WASD/\u2191\u2193\u2190\u2192 to move \u00B7 Click asteroid to mine \u00B7 [Esc] or click station to dock",
         cW / 2, cH - 6
       );
     }
@@ -1217,6 +1269,15 @@ export default function DriftCore() {
       if (Math.hypot(mx - g.station.x, my - g.station.y) < 50 && g.nearStation) {
         g.docked = true; g.moving = false; g.miningTarget = null;
         if (!g.contract) g.contract = makeContract(g.fieldGen || 0);
+        // Fluctuate market prices
+        ORES.forEach(o => {
+          const change = (Math.random() - 0.48) * 0.25; // slight upward bias
+          g.market[o.id] = Math.max(0.5, Math.min(2.5, (g.market[o.id] || 1) + change));
+          const hist = g.marketHistory[o.id] || [];
+          hist.push(+g.market[o.id].toFixed(2));
+          if (hist.length > 5) hist.shift();
+          g.marketHistory[o.id] = hist;
+        });
         A().click();
         saveGame(g);
         setUi((p) => ({ ...p, docked: true }));
@@ -1254,12 +1315,34 @@ export default function DriftCore() {
 
     canvas.addEventListener("click", onClick);
     canvas.addEventListener("touchstart", onTouch, { passive: false });
+
+    const onKey = (e) => {
+      if (!g || g.docked) return;
+      const step = g.speed * 40;
+      switch (e.key) {
+        case "w": case "ArrowUp":    g.ty = g.sy - step; g.tx = g.sx; g.moving = true; A().click(); break;
+        case "s": case "ArrowDown":  g.ty = g.sy + step; g.tx = g.sx; g.moving = true; A().click(); break;
+        case "a": case "ArrowLeft":  g.tx = g.sx - step; g.ty = g.sy; g.moving = true; A().click(); break;
+        case "d": case "ArrowRight": g.tx = g.sx + step; g.ty = g.sy; g.moving = true; A().click(); break;
+        case "Escape":
+          if (g.nearStation) {
+            g.docked = true; g.moving = false; g.miningTarget = null;
+            if (!g.contract) g.contract = makeContract(g.fieldGen || 0);
+            A().click(); saveGame(g); setUi(p => ({ ...p, docked: true }));
+          }
+          break;
+        default: break;
+      }
+    };
+    window.addEventListener("keydown", onKey);
+
     animId = requestAnimationFrame(tick);
 
     return () => {
       cancelAnimationFrame(animId);
       window.removeEventListener("resize", resize);
       window.removeEventListener("beforeunload", onUnload);
+      window.removeEventListener("keydown", onKey);
       saveGame(gRef.current);
       canvas.removeEventListener("click", onClick);
       canvas.removeEventListener("touchstart", onTouch);
@@ -1303,9 +1386,11 @@ export default function DriftCore() {
     const shipMult = ship.passiveFn(g, "sell");
     const cbonus = g.cargoBonus || 1;
     let t = 0;
-    Object.entries(g.cargo).forEach(([k, v]) => { t += v * ORES[k].val * shipMult * cbonus; });
+    Object.entries(g.cargo).forEach(([k, v]) => { t += v * ORES[k].val * shipMult * cbonus * (g.market[k] || 1); });
     if (!isFinite(t)) t = 0;
-    g.cr += Math.floor(t); g.cargo = {};
+    const tFloor = Math.floor(t);
+    g.cr += tFloor; g.cargo = {};
+    if (tFloor > 0 && g.stats) g.stats.crEarned = (g.stats.crEarned || 0) + tFloor;
     if (t > 0) { A().click(); saveGame(g); }
     setUi((p) => ({ ...p, cr: g.cr, cargo: 0, ore: {} }));
   };
@@ -1316,8 +1401,9 @@ export default function DriftCore() {
     const ship = SHIPS.find(s => s.id === g.shipId) || SHIPS[0];
     const shipMult = ship.passiveFn(g, "sell");
     const cbonus = g.cargoBonus || 1;
-    const earned = Math.floor(q * ORES[k].val * shipMult * cbonus);
+    const earned = Math.floor(q * ORES[k].val * shipMult * cbonus * (g.market?.[k] || 1));
     g.cr += isFinite(earned) ? earned : 0;
+    if (isFinite(earned) && g.stats) g.stats.crEarned = (g.stats.crEarned || 0) + earned;
     delete g.cargo[k];
     A().click();
     const tc = Object.values(g.cargo).reduce((a, b) => a + b, 0);
@@ -1332,7 +1418,10 @@ export default function DriftCore() {
     const ship = SHIPS.find(s => s.id === g.shipId) || SHIPS[0];
     const mult = ship.passiveFn(g, "contract");
     const contractEarned = Math.floor(g.contract.reward * (isFinite(mult) ? mult : 1));
-    if (isFinite(contractEarned)) g.cr += contractEarned;
+    if (isFinite(contractEarned)) {
+      g.cr += contractEarned;
+      if (g.stats) { g.stats.crEarned = (g.stats.crEarned || 0) + contractEarned; g.stats.contractsFilled = (g.stats.contractsFilled || 0) + 1; }
+    }
     A().click();
     g.contract = null;
     const tc = Object.values(g.cargo).reduce((a, b) => a + b, 0);
@@ -1462,7 +1551,7 @@ export default function DriftCore() {
           </div>
 
           <div style={{ display: "flex", gap: 4, marginBottom: 8 }}>
-            {["cargo","upgrades","ships"].map(tab => (
+            {["cargo","upgrades","ships","market","stats"].map(tab => (
               <button key={tab} onClick={() => setStationTab(tab)} style={{
                 padding: "5px 12px", fontSize: 9, fontFamily: "inherit", borderRadius: 3, cursor: "pointer",
                 border: `1px solid ${stationTab === tab ? "#44aaee" : "#1a2a35"}`,
@@ -1524,7 +1613,8 @@ export default function DriftCore() {
                     <div style={{ width: 8, height: 8, borderRadius: "50%", background: ore.c }} />
                     <span style={{ flex: 1, fontSize: 10, color: ore.c }}>{ore.n}</span>
                     <span style={{ fontSize: 9, color: "#7a8a9a" }}>&times;{v}</span>
-                    <span style={{ fontSize: 8, color: "#4a5a6a" }}>{Math.floor(v * ore.val * mult)} CR</span>
+                    {(() => { const mkt = g?.market?.[parseInt(k)] || 1; return mkt > 1.15 ? <span style={{ fontSize: 8, color: "#44dd88" }}>&#9650;</span> : mkt < 0.85 ? <span style={{ fontSize: 8, color: "#ff6644" }}>&#9660;</span> : null; })()}
+                    <span style={{ fontSize: 8, color: "#4a5a6a" }}>{Math.floor(v * ore.val * mult * (g?.market?.[parseInt(k)] || 1))} CR</span>
                     <button onClick={() => doSellOre(parseInt(k))} style={Bs("#ddaa44")}>Sell</button>
                   </div>
                 );
@@ -1626,6 +1716,70 @@ export default function DriftCore() {
                   </div>
                 );
               })}
+            </div>
+          )}
+
+          {stationTab === "market" && (
+            <div style={P}>
+              <div style={{ fontSize: 11, color: "#88ccee", marginBottom: 4, fontFamily: "'Rajdhani'", fontWeight: 600 }}>ORE MARKET</div>
+              <div style={{ fontSize: 8, color: "#3a4a5a", marginBottom: 8 }}>Prices shift each time you dock.</div>
+              {ORES.map(ore => {
+                const mkt = g?.market?.[ore.id] || 1;
+                const hist = g?.marketHistory?.[ore.id] || [1];
+                const mktCol = mkt > 1.1 ? "#44dd88" : mkt < 0.9 ? "#ff6644" : "#5a6a7a";
+                return (
+                  <div key={ore.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 6px", marginBottom: 3, background: "#0a1018", borderRadius: 3, border: "1px solid #141e28" }}>
+                    <div style={{ width: 8, height: 8, borderRadius: "50%", background: ore.c }} />
+                    <span style={{ flex: 1, fontSize: 10, color: ore.c }}>{ore.n}</span>
+                    <span style={{ fontSize: 8, color: "#4a5a6a" }}>{ore.val}cr base</span>
+                    <div style={{ display: "flex", gap: 1, alignItems: "flex-end" }}>
+                      {hist.map((v, i) => <div key={i} style={{ width: 4, height: Math.max(2, Math.round(v * 8)), background: v >= 1 ? "#44dd88" : "#ff6644", borderRadius: 1 }} />)}
+                    </div>
+                    <span style={{ fontSize: 9, color: mktCol, minWidth: 32, textAlign: "right" }}>{mkt.toFixed(2)}x</span>
+                    {mkt > 1.8 && <span style={{ fontSize: 7, color: "#ffdd44", fontWeight: 700 }}>SURGE</span>}
+                    {mkt < 0.65 && <span style={{ fontSize: 7, color: "#ff4444", fontWeight: 700 }}>CRASH</span>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {stationTab === "stats" && (
+            <div style={P}>
+              <div style={{ fontSize: 11, color: "#88ccee", marginBottom: 8, fontFamily: "'Rajdhani'", fontWeight: 600 }}>SESSION STATS</div>
+              {[
+                ["Ore Mined", (g?.stats?.oresMined || 0) + " units"],
+                ["Fields Cleared", g?.stats?.fieldsCleared || 0],
+                ["CR Earned", (g?.stats?.crEarned || 0) + " CR"],
+                ["Events Survived", g?.stats?.eventsEncountered || 0],
+                ["Contracts Filled", g?.stats?.contractsFilled || 0],
+                ["Distance", Math.floor((g?.stats?.distanceTravelled || 0) / 100) + " km"],
+                ["Peak CR", (g?.stats?.peakCr || 0) + " CR"],
+              ].map(([label, val]) => (
+                <div key={label} style={{ display: "flex", justifyContent: "space-between", padding: "4px 6px", marginBottom: 2, background: "#0a1018", borderRadius: 3 }}>
+                  <span style={{ fontSize: 9, color: "#4a6a8a" }}>{label}</span>
+                  <span style={{ fontSize: 9, color: "#88ccee" }}>{val}</span>
+                </div>
+              ))}
+              <div style={{ fontSize: 10, color: "#44ddaa", marginTop: 10, marginBottom: 6, fontWeight: 600 }}>MILESTONES</div>
+              {[
+                ["First Strike", "Mine 1 ore", (g?.stats?.oresMined || 0) >= 1, 1, g?.stats?.oresMined || 0],
+                ["Hauler", "Mine 50 ore", (g?.stats?.oresMined || 0) >= 50, 50, g?.stats?.oresMined || 0],
+                ["Explorer", "Clear 3 fields", (g?.stats?.fieldsCleared || 0) >= 3, 3, g?.stats?.fieldsCleared || 0],
+                ["Rich", "Reach 5000 CR peak", (g?.stats?.peakCr || 0) >= 5000, 5000, g?.stats?.peakCr || 0],
+                ["Veteran", "Survive 10 events", (g?.stats?.eventsEncountered || 0) >= 10, 10, g?.stats?.eventsEncountered || 0],
+                ["Contractor", "Fill 5 contracts", (g?.stats?.contractsFilled || 0) >= 5, 5, g?.stats?.contractsFilled || 0],
+              ].map(([name, desc, done, max, cur]) => (
+                <div key={name} style={{ padding: "5px 6px", marginBottom: 3, background: done ? "#0a1828" : "#0a1018", borderRadius: 3, border: `1px solid ${done ? "#44ddaa44" : "#141e28"}` }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+                    <span style={{ fontSize: 9, color: done ? "#44ddaa" : "#4a5a6a" }}>{done ? "✓ " : ""}{name}</span>
+                    <span style={{ fontSize: 8, color: "#3a4a5a" }}>{desc}</span>
+                  </div>
+                  <div style={{ background: "#0a1018", borderRadius: 2, height: 3 }}>
+                    <div style={{ background: done ? "#44ddaa" : "#2a4a6a", borderRadius: 2, height: 3, width: `${Math.min(100, (cur / max) * 100)}%` }} />
+                  </div>
+                </div>
+              ))}
             </div>
           )}
 
