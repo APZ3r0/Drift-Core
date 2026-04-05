@@ -576,8 +576,9 @@ export default function DriftCore() {
         fuel: savedData.maxFuel ?? base.maxFuel,
         hull: savedData.maxHull ?? base.maxHull,
       });
-      // Restore visited Sets for survey missions
-      if (base.missions) base.missions = base.missions.map(m => m.type==="survey" ? {...m, visited: new Set(m.visited||[])} : m);
+      // Restore visited Sets for survey missions (JSON can't serialize Sets)
+      if (base.missions && base.missions.length > 0)
+        base.missions = base.missions.map(m => m.type==="survey" ? {...m, visited: new Set(Array.isArray(m.visited) ? m.visited : [])} : m);
     }
     return base;
   }, []);
@@ -993,6 +994,9 @@ export default function DriftCore() {
     }
 
     function render() {
+      try { _render(); } catch(e) { console.error("render error:", e); }
+    }
+    function _render() {
       ctx.clearRect(0, 0, cW, cH);
       ctx.fillStyle = "#060a12";
       ctx.fillRect(0, 0, cW, cH);
@@ -1515,7 +1519,7 @@ export default function DriftCore() {
             const hit = angleDiff < g.drillSweetSize / 2;
             if (hit) {
               // Power strike — advance drill progress + bonus ore on depletion
-              g.miningProg = Math.min(59, g.miningProg + 25);
+              g.miningProg += 25;
               g.miningHeat = Math.max(0, g.miningHeat - 10);
               g.screenShake = 3;
               for (let i = 0; i < 8; i++)
